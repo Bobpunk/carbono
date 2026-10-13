@@ -51,22 +51,24 @@ export const appConfig = {
   // AI Model Configuration
   ai: {
     // Default AI model
-    defaultModel: 'google/gemini-3-pro-preview',
+    defaultModel: 'google/gemini-flash-latest',
     
     // Available models
     availableModels: [
+      'google/gemini-flash-latest',
+      'google/gemini-3.1-pro-preview',
       'openai/gpt-5',
       'moonshotai/kimi-k2-instruct-0905',
-      'anthropic/claude-sonnet-4-20250514',
-      'google/gemini-3-pro-preview'
+      'anthropic/claude-sonnet-4-20250514'
     ],
     
     // Model display names
     modelDisplayNames: {
+      'google/gemini-flash-latest': 'Gemini Flash (grátis)',
+      'google/gemini-3.1-pro-preview': 'Gemini 3.1 Pro (cota baixa)',
       'openai/gpt-5': 'GPT-5',
       'moonshotai/kimi-k2-instruct-0905': 'Kimi K2 (Groq)',
-      'anthropic/claude-sonnet-4-20250514': 'Sonnet 4',
-      'google/gemini-3-pro-preview': 'Gemini 3 Pro (Preview)'
+      'anthropic/claude-sonnet-4-20250514': 'Sonnet 4'
     } as Record<string, string>,
     
     // Model API configuration

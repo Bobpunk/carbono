@@ -1305,7 +1305,7 @@ If you're running out of space, generate FEWER files but make them COMPLETE.
 It's better to have 3 complete files than 10 incomplete files.`
             }
           ],
-          maxTokens: 8192, // Reduce to ensure completion
+          maxTokens: isGoogle ? 16384 : 8192, // Gemini supports larger outputs; others stay conservative
           stopSequences: [] // Don't stop early
           // Note: Neither Groq nor Anthropic models support tool/function calling in this context
           // We use XML tags for package detection instead
@@ -1328,32 +1328,49 @@ It's better to have 3 complete files than 10 incomplete files.`
         let result;
         let retryCount = 0;
         const maxRetries = 2;
+        let firstText: string | null = null;
+        let textIterator: AsyncIterator<string> | null = null;
+        let usedFallback = false;
         
         while (retryCount <= maxRetries) {
           try {
             result = await streamText(streamOptions);
+            // Force the request to fire now so provider errors (429/503/404)
+            // surface here, where we can retry, instead of silently streaming nothing.
+            textIterator = result.textStream[Symbol.asyncIterator]();
+            const first = await textIterator.next();
+            if (first.done) {
+              throw Object.assign(new Error('Model returned an empty stream (rate limited or overloaded)'), { isRetryable: true });
+            }
+            firstText = first.value ?? '';
             break; // Success, exit retry loop
           } catch (streamError: any) {
             console.error(`[generate-ai-code-stream] Error calling streamText (attempt ${retryCount + 1}/${maxRetries + 1}):`, streamError);
             
             // Check if this is a Groq service unavailable error
             const isGroqServiceError = isKimiGroq && streamError.message?.includes('Service unavailable');
+            const status = streamError.statusCode ?? streamError.status;
             const isRetryableError = streamError.message?.includes('Service unavailable') || 
                                     streamError.message?.includes('rate limit') ||
-                                    streamError.message?.includes('timeout');
+                                    streamError.message?.includes('timeout') ||
+                                    streamError.message?.includes('high demand') ||
+                                    streamError.message?.includes('empty stream') ||
+                                    status === 429 ||
+                                    status === 503 ||
+                                    streamError.isRetryable === true;
             
             if (retryCount < maxRetries && isRetryableError) {
               retryCount++;
-              console.log(`[generate-ai-code-stream] Retrying in ${retryCount * 2} seconds...`);
+              console.log(`[generate-ai-code-stream] Retrying in ${Math.min(retryCount * 5000, 20000)}ms...`);
               
               // Send progress update about retry
               await sendProgress({ 
                 type: 'info', 
-                message: `Service temporarily unavailable, retrying (attempt ${retryCount + 1}/${maxRetries + 1})...` 
+                message: `Model indisponível no momento (rate limit), tentando de novo (${retryCount + 1}/${maxRetries + 1})...` 
               });
               
               // Wait before retry with exponential backoff
-              await new Promise(resolve => setTimeout(resolve, retryCount * 2000));
+              await new Promise(resolve => setTimeout(resolve, Math.min(retryCount * 5000, 20000)));
               
               // If Groq fails, try switching to a fallback model
               if (isGroqServiceError && retryCount === maxRetries) {
@@ -1361,6 +1378,17 @@ It's better to have 3 complete files than 10 incomplete files.`
                 streamOptions.model = openai('gpt-4-turbo');
                 actualModel = 'gpt-4-turbo';
               }
+            } else if (isGoogle && !usedFallback && actualModel !== 'gemini-3.1-flash-lite') {
+              // Free-tier Gemini is flaky: fall back to the most available Flash model
+              usedFallback = true;
+              console.log('[generate-ai-code-stream] Falling back to gemini-3.1-flash-lite');
+              await sendProgress({
+                type: 'info',
+                message: 'Modelo principal indisponível, usando Gemini Flash Lite como alternativa...'
+              });
+              streamOptions.model = googleGenerativeAI('gemini-3.1-flash-lite');
+              actualModel = 'gemini-3.1-flash-lite';
+              retryCount = 0;
             } else {
               // Final error, send to user
               await sendProgress({ 
@@ -1381,6 +1409,22 @@ It's better to have 3 complete files than 10 incomplete files.`
           }
         }
         
+        if (!textIterator) {
+          const reason = 'Modelo indisponível (rate limit do plano gratuito). Aguarde ~1 minuto e tente de novo.';
+          await sendProgress({ type: 'error', error: reason });
+          return;
+        }
+        
+        // Replay the peeked chunk together with the rest of the stream
+        async function* combinedTextStream() {
+          if (firstText) yield firstText;
+          while (true) {
+            const next = await textIterator!.next();
+            if (next.done) return;
+            yield next.value ?? '';
+          }
+        }
+        
         // Stream the response and parse in real-time
         let generatedCode = '';
         let currentFile = '';
@@ -1394,7 +1438,7 @@ It's better to have 3 complete files than 10 incomplete files.`
         let tagBuffer = '';
         
         // Stream the response and parse for packages in real-time
-        for await (const textPart of result?.textStream || []) {
+        for await (const textPart of combinedTextStream()) {
           const text = textPart || '';
           generatedCode += text;
           currentFile += text;
@@ -1504,6 +1548,17 @@ It's better to have 3 complete files than 10 incomplete files.`
         }
         
         console.log('\n\n[generate-ai-code-stream] Streaming complete.');
+
+        // The SDK can surface provider errors (429/503/404) without throwing,
+        // which results in an empty stream. Fail loudly instead of reporting success.
+        if (!generatedCode.includes('<file')) {
+          const reason = generatedCode.trim()
+            ? 'The AI reply did not contain any <file> blocks. Try rephrasing the request.'
+            : 'The AI returned no content. This usually means the model is rate-limited (free tier) or overloaded - wait ~1 minute and retry.';
+          console.error('[generate-ai-code-stream] Empty generation:', reason);
+          await sendProgress({ type: 'error', error: reason });
+          return;
+        }
         
         // Send any remaining conversational text
         if (conversationalBuffer.trim()) {

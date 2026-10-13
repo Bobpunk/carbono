@@ -57,3 +57,9 @@ e2b-template-*
 repomix-output.txt
 bun.lockb
 .env*.local
+
+# Container
+.dockerignore
+
+# Media & refs
+intro.mp4

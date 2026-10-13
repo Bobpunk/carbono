@@ -96,7 +96,7 @@ input[type="search"]::-webkit-search-results-decoration {
 /* Fix input cursor visibility on Windows Chrome */
 input,
 textarea {
-  caret-color: hsl(var(--foreground));
+  caret-color: var(--foreground);
 }
 
 /* Chrome, Safari and Opera */
